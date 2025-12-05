@@ -155,27 +155,85 @@ const ArcFX = () => {
     }
   };
 
-  // Switch to Arc Testnet network
-  const switchToArcTestnet = async () => {
-    if (typeof window.ethereum === 'undefined') return;
+  // Switch to any network based on chain name
+  const switchToNetwork = async (chainName: string) => {
+    if (typeof window.ethereum === 'undefined') return false;
+
+    const chainConfig = chains[chainName];
+    if (!chainConfig || !chainConfig.chainId) return false;
 
     try {
-      const arcChainId = '0x4CEA42'; // 5042002 in hex
+      const chainIdHex = '0x' + chainConfig.chainId.toString(16);
+
+      // Try to switch network
       await window.ethereum.request({
         method: 'wallet_switchEthereumChain',
-        params: [{ chainId: arcChainId }],
+        params: [{ chainId: chainIdHex }],
       });
+      return true;
     } catch (switchError: any) {
-      // This error code indicates that the chain has not been added to MetaMask
+      // Chain not added to MetaMask, try to add it
       if (switchError.code === 4902) {
-        // Add the chain first, then switch
-        await addArcTestnetToMetaMask();
-        await switchToArcTestnet();
+        try {
+          // Add the chain first
+          if (chainName === 'Arc_Testnet' && chainConfig.networkDetails) {
+            await window.ethereum.request({
+              method: 'wallet_addEthereumChain',
+              params: [chainConfig.networkDetails],
+            });
+            // Then switch to it
+            await switchToNetwork(chainName);
+            return true;
+          } else if (chainName === 'Ethereum_Sepolia') {
+            await window.ethereum.request({
+              method: 'wallet_addEthereumChain',
+              params: [{
+                chainId: '0xAA36A7', // 11155111 in hex
+                chainName: 'Sepolia',
+                nativeCurrency: {
+                  name: 'ETH',
+                  symbol: 'ETH',
+                  decimals: 18,
+                },
+                rpcUrls: ['https://sepolia.infura.io/v3/'],
+                blockExplorerUrls: ['https://sepolia.etherscan.io'],
+              }],
+            });
+            await switchToNetwork(chainName);
+            return true;
+          } else if (chainName === 'Polygon_Amoy') {
+            await window.ethereum.request({
+              method: 'wallet_addEthereumChain',
+              params: [{
+                chainId: '0x13882', // 80002 in hex
+                chainName: 'Polygon Amoy',
+                nativeCurrency: {
+                  name: 'MATIC',
+                  symbol: 'MATIC',
+                  decimals: 18,
+                },
+                rpcUrls: ['https://rpc-amoy.polygon.technology'],
+                blockExplorerUrls: ['https://www.oklink.com/amoy'],
+              }],
+            });
+            await switchToNetwork(chainName);
+            return true;
+          }
+        } catch (addError: any) {
+          console.error(`Error adding ${chainName}:`, addError);
+          return false;
+        }
       } else {
-        console.error('Error switching to Arc Testnet:', switchError);
-        throw switchError;
+        console.error(`Error switching to ${chainName}:`, switchError);
+        return false;
       }
     }
+    return false;
+  };
+
+  // Switch to Arc Testnet network (backward compatibility)
+  const switchToArcTestnet = async () => {
+    return await switchToNetwork('Arc_Testnet');
   };
 
   // Connect wallet and auto-detect/switch to Arc Testnet
@@ -198,17 +256,21 @@ const ArcFX = () => {
         const web3Signer = await web3Provider.getSigner();
         setSigner(web3Signer);
 
-        // Auto-detect and switch to Arc Testnet
-        if (fromChain === 'Arc_Testnet') {
+        // Auto-switch to selected network
+        const expectedChainId = chains[fromChain]?.chainId;
+        if (expectedChainId) {
           try {
-            await switchToArcTestnet();
-            // Wait a bit for network switch to complete
-            await new Promise(resolve => setTimeout(resolve, 1000));
+            // Switch to the correct network
+            await switchToNetwork(fromChain);
+            // Wait for network switch to complete
+            await new Promise(resolve => setTimeout(resolve, 1500));
             // Refresh provider and signer after network switch
             const newProvider = new ethers.BrowserProvider(window.ethereum!);
             const newSigner = await newProvider.getSigner();
             setProvider(newProvider);
             setSigner(newSigner);
+            // Wait a bit more for everything to settle
+            await new Promise(resolve => setTimeout(resolve, 500));
           } catch (error: any) {
             console.error('Network switch error:', error);
             // Continue even if switch fails
@@ -220,8 +282,7 @@ const ArcFX = () => {
           await checkAndSwitchNetwork();
         }
 
-        // Wait a moment for everything to settle, then load balance
-        await new Promise(resolve => setTimeout(resolve, 500));
+        // Load balance automatically
         await loadBalance();
       } catch (error: any) {
         alert('Failed to connect wallet: ' + error.message);
@@ -356,19 +417,97 @@ const ArcFX = () => {
     }
   };
 
-  // Refresh balance
+  // Auto-switch network and load balance when chain or token changes
   useEffect(() => {
-    if (isConnected && signer && getTokenAddress(fromChain, selectedToken)) {
-      loadBalance();
-    }
+    if (!isConnected || !signer || !provider) return;
+
+    const handleChainSwitch = async () => {
+      try {
+        // Get current network
+        const currentNetwork = await provider.getNetwork();
+        const expectedChainId = chains[fromChain]?.chainId;
+
+        // Check if we need to switch networks
+        if (currentNetwork && expectedChainId && currentNetwork.chainId !== BigInt(expectedChainId)) {
+          console.log(`Switching to ${chains[fromChain]?.name} (Chain ID: ${expectedChainId})`);
+          
+          // Switch to the correct network
+          const switched = await switchToNetwork(fromChain);
+          
+          if (switched) {
+            // Wait for network switch to complete
+            await new Promise(resolve => setTimeout(resolve, 1500));
+            
+            // Refresh provider and signer after network switch
+            if (window.ethereum) {
+              const newProvider = new ethers.BrowserProvider(window.ethereum);
+              const newSigner = await newProvider.getSigner();
+              setProvider(newProvider);
+              setSigner(newSigner);
+              
+              // Wait a bit more for everything to settle
+              await new Promise(resolve => setTimeout(resolve, 500));
+              
+              // Load balance after provider refresh
+              const tokenAddress = getTokenAddress(fromChain, selectedToken);
+              if (tokenAddress) {
+                const tokenContract = new ethers.Contract(tokenAddress, ERC20_ABI, newSigner);
+                const [balance, decimals] = await Promise.all([
+                  tokenContract.balanceOf(walletAddress),
+                  tokenContract.decimals()
+                ]);
+                const formattedBalance = ethers.formatUnits(balance, decimals);
+                setBalance(parseFloat(formattedBalance).toFixed(2));
+                setTokenDecimals(decimals);
+              }
+            }
+          }
+        } else {
+          // Already on correct network, just load balance
+          await loadBalance();
+        }
+      } catch (error: any) {
+        console.error('Error in auto-switch:', error);
+        // Try to load balance anyway (might work if already on correct network)
+        loadBalance().catch(console.error);
+      }
+    };
+
+    handleChainSwitch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fromChain, selectedToken, isConnected, walletAddress]);
 
-  // Auto-switch network when chain changes
+  // Listen for network changes and reload balance
   useEffect(() => {
-    if (isConnected && fromChain === 'Arc_Testnet') {
-      switchToArcTestnet().catch(console.error);
+    if (!isConnected || typeof window.ethereum === 'undefined') return;
+
+    const handleNetworkChange = () => {
+      console.log('Network changed, reloading balance...');
+      // Refresh provider and signer
+      const newProvider = new ethers.BrowserProvider(window.ethereum!);
+      newProvider.getSigner().then(async (newSigner) => {
+        setProvider(newProvider);
+        setSigner(newSigner);
+        // Wait a bit then reload balance
+        await new Promise(resolve => setTimeout(resolve, 500));
+        loadBalance().catch(console.error);
+      });
+    };
+
+    // Listen for chainChanged event (MetaMask supports event listeners)
+    if (window.ethereum && 'on' in window.ethereum) {
+      (window.ethereum as any).on('chainChanged', handleNetworkChange);
+      (window.ethereum as any).on('accountsChanged', handleNetworkChange);
+
+      return () => {
+        if (window.ethereum && 'removeListener' in window.ethereum) {
+          (window.ethereum as any).removeListener('chainChanged', handleNetworkChange);
+          (window.ethereum as any).removeListener('accountsChanged', handleNetworkChange);
+        }
+      };
     }
-  }, [fromChain, isConnected]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isConnected, fromChain, selectedToken]);
 
   // Copy address
   const copyAddress = () => {

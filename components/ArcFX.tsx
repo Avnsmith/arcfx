@@ -84,7 +84,7 @@ const ArcFX = () => {
   useEffect(() => {
     setIsLocalhost(
       chains[fromChain]?.chainId === 31337 || 
-      (process.env.NEXT_PUBLIC_USDC_ADDRESS && process.env.NEXT_PUBLIC_SWAP_BRIDGE_ADDRESS)
+      !!(process.env.NEXT_PUBLIC_USDC_ADDRESS && process.env.NEXT_PUBLIC_SWAP_BRIDGE_ADDRESS)
     );
   }, [fromChain]);
 

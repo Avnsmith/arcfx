@@ -24,9 +24,16 @@ const SWAP_BRIDGE_ABI = [
 const isDevelopment = typeof window !== 'undefined' && 
   (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
 
+// Official Arc Testnet contract addresses from https://docs.arc.network/arc/references/contract-addresses
+const ARC_CONTRACTS = {
+  USDC: '0x3600000000000000000000000000000000000000', // USDC ERC-20 interface (6 decimals)
+  EURC: '0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a', // EURC token contract (6 decimals)
+};
+
 const ArcFX = () => {
   const [fromChain, setFromChain] = useState('Arc_Testnet');
   const [toChain, setToChain] = useState('Ethereum_Sepolia');
+  const [selectedToken, setSelectedToken] = useState<'USDC' | 'EURC'>('USDC');
   const [amount, setAmount] = useState('');
   const [walletAddress, setWalletAddress] = useState('');
   const [isConnected, setIsConnected] = useState(false);
@@ -37,7 +44,7 @@ const ArcFX = () => {
   const [estimatedFee, setEstimatedFee] = useState('0.01');
   const [provider, setProvider] = useState<ethers.BrowserProvider | null>(null);
   const [signer, setSigner] = useState<ethers.JsonRpcSigner | null>(null);
-  const [usdcDecimals, setUsdcDecimals] = useState(6);
+  const [tokenDecimals, setTokenDecimals] = useState(6);
   const [isLocalhost, setIsLocalhost] = useState(false);
 
   // Chain configurations
@@ -55,12 +62,15 @@ const ArcFX = () => {
     Arc_Testnet: {
       name: 'Arc Testnet',
       chainId: 5042002,
-      token: 'USDC',
       rpc: 'https://rpc.testnet.arc.network',
       explorer: 'https://testnet.arcscan.app',
-      usdcAddress: '0x3600000000000000000000000000000000000000',
       cctpDomain: 26,
       color: 'from-blue-500 to-cyan-500',
+      // Official Arc Testnet contract addresses
+      tokens: {
+        USDC: ARC_CONTRACTS.USDC,
+        EURC: ARC_CONTRACTS.EURC,
+      },
       // Arc Testnet network details for MetaMask
       networkDetails: {
         chainId: '0x4CEA42', // 5042002 in hex
@@ -102,6 +112,20 @@ const ArcFX = () => {
       isDevelopment || key !== 'Localhost'
     )
   );
+
+  // Get current token address for selected chain and token
+  const getTokenAddress = (chain: string, token: 'USDC' | 'EURC'): string => {
+    const chainConfig = chains[chain];
+    if (!chainConfig) return '';
+
+    // Arc Testnet has both tokens
+    if (chain === 'Arc_Testnet' && chainConfig.tokens) {
+      return chainConfig.tokens[token] || '';
+    }
+
+    // Other chains default to USDC
+    return chainConfig.usdcAddress || chainConfig[`${token.toLowerCase()}Address`] || '';
+  };
 
   // Check if localhost is configured
   useEffect(() => {
@@ -235,22 +259,23 @@ const ArcFX = () => {
     }
   };
 
-  // Load USDC balance
+  // Load token balance (USDC or EURC)
   const loadBalance = async () => {
-    if (!signer || !chains[fromChain]?.usdcAddress) {
+    const tokenAddress = getTokenAddress(fromChain, selectedToken);
+    if (!signer || !tokenAddress) {
       return;
     }
 
     try {
-      const usdcContract = new ethers.Contract(
-        chains[fromChain].usdcAddress,
+      const tokenContract = new ethers.Contract(
+        tokenAddress,
         ERC20_ABI,
         signer
       );
 
-      const balance = await usdcContract.balanceOf(walletAddress);
-      const decimals = await usdcContract.decimals();
-      setUsdcDecimals(decimals);
+      const balance = await tokenContract.balanceOf(walletAddress);
+      const decimals = await tokenContract.decimals();
+      setTokenDecimals(decimals);
       
       const formattedBalance = ethers.formatUnits(balance, decimals);
       setBalance(parseFloat(formattedBalance).toFixed(2));
@@ -262,10 +287,10 @@ const ArcFX = () => {
 
   // Refresh balance
   useEffect(() => {
-    if (isConnected && signer && chains[fromChain]?.usdcAddress) {
+    if (isConnected && signer && getTokenAddress(fromChain, selectedToken)) {
       loadBalance();
     }
-  }, [fromChain, isConnected, walletAddress]);
+  }, [fromChain, selectedToken, isConnected, walletAddress]);
 
   // Auto-switch network when chain changes
   useEffect(() => {
@@ -290,7 +315,7 @@ const ArcFX = () => {
       const bridgeFee = parseFloat(amount) * 0.001;
       setEstimatedFee((baseFee + bridgeFee).toFixed(4));
     }
-  }, [amount, isLocalhost, signer]);
+  }, [amount, isLocalhost, signer, selectedToken]);
 
   // Estimate fee from contract
   const estimateFee = async () => {
@@ -304,10 +329,10 @@ const ArcFX = () => {
       );
 
       const feeBps = await swapBridge.bridgeFeeBps();
-      const amountWei = ethers.parseUnits(amount, usdcDecimals);
+      const amountWei = ethers.parseUnits(amount, tokenDecimals);
       const fee = (amountWei * feeBps) / BigInt(10000);
       
-      setEstimatedFee(ethers.formatUnits(fee, usdcDecimals));
+      setEstimatedFee(ethers.formatUnits(fee, tokenDecimals));
     } catch (error) {
       console.error('Error estimating fee:', error);
     }
@@ -330,7 +355,7 @@ const ArcFX = () => {
       return;
     }
 
-    if (isLocalhost && (!signer || !chains[fromChain]?.usdcAddress || !chains[fromChain]?.swapBridgeAddress)) {
+    if (isLocalhost && (!signer || !getTokenAddress(fromChain, selectedToken) || !chains[fromChain]?.swapBridgeAddress)) {
       alert('Localhost contracts not configured. Please set NEXT_PUBLIC_USDC_ADDRESS and NEXT_PUBLIC_SWAP_BRIDGE_ADDRESS in .env.local');
       return;
     }
@@ -344,8 +369,9 @@ const ArcFX = () => {
     setIsSwapping(true);
     
     try {
-      const usdcContract = new ethers.Contract(
-        chains[fromChain].usdcAddress,
+      const tokenAddress = getTokenAddress(fromChain, selectedToken);
+      const tokenContract = new ethers.Contract(
+        tokenAddress,
         ERC20_ABI,
         signer
       );
@@ -357,18 +383,18 @@ const ArcFX = () => {
       );
 
       // Convert amount to wei
-      const amountWei = ethers.parseUnits(amount, usdcDecimals);
+      const amountWei = ethers.parseUnits(amount, tokenDecimals);
 
       // Check allowance
-      const allowance = await usdcContract.allowance(
+      const allowance = await tokenContract.allowance(
         walletAddress,
         chains[fromChain].swapBridgeAddress
       );
 
       // Approve if needed
       if (allowance < amountWei) {
-        console.log('Approving USDC...');
-        const approveTx = await usdcContract.approve(
+        console.log(`Approving ${selectedToken}...`);
+        const approveTx = await tokenContract.approve(
           chains[fromChain].swapBridgeAddress,
           ethers.MaxUint256
         );
@@ -379,7 +405,7 @@ const ArcFX = () => {
       // Execute swap
       console.log('Executing swap...');
       const swapTx = await swapBridgeContract.swap(
-        chains[fromChain].usdcAddress,
+        tokenAddress,
         amountWei,
         chains[toChain]?.chainId || 31337
       );
@@ -391,7 +417,7 @@ const ArcFX = () => {
       // Refresh balance
       await loadBalance();
 
-      alert(`Success! Swap transaction confirmed.\nFrom: ${chains[fromChain].name}\nTo: ${chains[toChain].name}\nAmount: ${amount} USDC\nTx: ${receipt.hash}`);
+      alert(`Success! Swap transaction confirmed.\nFrom: ${chains[fromChain].name}\nTo: ${chains[toChain].name}\nAmount: ${amount} ${selectedToken}\nTx: ${receipt.hash}`);
     } catch (error: any) {
       console.error('Transaction error:', error);
       alert('Transaction failed: ' + (error.reason || error.message));
@@ -408,6 +434,8 @@ const ArcFX = () => {
   };
 
   const currentChain = chains[fromChain];
+  const tokenAddress = getTokenAddress(fromChain, selectedToken);
+  const isArcTestnet = fromChain === 'Arc_Testnet';
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900 p-4">
@@ -448,7 +476,7 @@ const ArcFX = () => {
                 </button>
               </div>
               <div className="text-sm text-cyan-400 mt-1">
-                Balance: {balance} USDC
+                Balance: {balance} {selectedToken}
               </div>
               <button
                 onClick={loadBalance}
@@ -474,7 +502,7 @@ const ArcFX = () => {
               ) : (
                 <>
                   <strong>Arc Testnet Auto-Detection:</strong> When you connect your wallet, Arc Testnet will be automatically added to MetaMask if not already configured. 
-                  Gas fees are paid in USDC for predictable costs (~$0.01 per transaction).
+                  Supports both <strong>USDC</strong> and <strong>EURC</strong> tokens. Gas fees are paid in USDC for predictable costs (~$0.01 per transaction).
                 </>
               )}
             </div>
@@ -486,6 +514,42 @@ const ArcFX = () => {
       <div className="max-w-2xl mx-auto">
         <div className="bg-slate-800/80 backdrop-blur-xl rounded-2xl p-6 shadow-2xl border border-slate-700/50">
           <h2 className="text-xl font-semibold text-white mb-6">Cross-Chain Swap</h2>
+          
+          {/* Token Selection (only for Arc Testnet) */}
+          {isArcTestnet && (
+            <div className="mb-4">
+              <label className="text-sm text-blue-300 mb-2 block">Select Token</label>
+              <div className="bg-slate-900/50 rounded-xl p-3 border border-slate-700/50">
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setSelectedToken('USDC')}
+                    className={`flex-1 px-4 py-2 rounded-lg font-semibold transition-all ${
+                      selectedToken === 'USDC'
+                        ? 'bg-blue-500 text-white'
+                        : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
+                    }`}
+                  >
+                    USDC
+                  </button>
+                  <button
+                    onClick={() => setSelectedToken('EURC')}
+                    className={`flex-1 px-4 py-2 rounded-lg font-semibold transition-all ${
+                      selectedToken === 'EURC'
+                        ? 'bg-blue-500 text-white'
+                        : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
+                    }`}
+                  >
+                    EURC
+                  </button>
+                </div>
+                <div className="text-xs text-slate-400 mt-2">
+                  {selectedToken === 'USDC' 
+                    ? 'USDC Address: 0x3600...0000' 
+                    : 'EURC Address: 0x89B5...D72a'}
+                </div>
+              </div>
+            </div>
+          )}
           
           {/* From Chain */}
           <div className="mb-4">
@@ -513,7 +577,7 @@ const ArcFX = () => {
                 min="0"
               />
               <div className="text-sm text-slate-400 mt-2">
-                Available: {balance} USDC
+                Available: {balance} {selectedToken}
               </div>
             </div>
           </div>
@@ -559,7 +623,7 @@ const ArcFX = () => {
           {amount && parseFloat(amount) > 0 && (
             <div className="bg-slate-900/30 rounded-lg p-4 mb-4 border border-slate-700/30">
               <div className="flex justify-between text-sm mb-2">
-                <span className="text-slate-400">Estimated Fee (USDC)</span>
+                <span className="text-slate-400">Estimated Fee ({selectedToken})</span>
                 <span className="text-cyan-400">~{estimatedFee}</span>
               </div>
               <div className="flex justify-between text-sm mb-2">
@@ -625,14 +689,40 @@ const ArcFX = () => {
             <div className="text-sm text-slate-300">Sub-second deterministic settlement</div>
           </div>
           <div className="bg-slate-800/50 backdrop-blur-sm rounded-lg p-4 border border-slate-700/50">
-            <div className="text-cyan-400 font-semibold mb-2">💰 USDC Gas</div>
-            <div className="text-sm text-slate-300">Predictable fees in stablecoins</div>
+            <div className="text-cyan-400 font-semibold mb-2">💰 USDC & EURC</div>
+            <div className="text-sm text-slate-300">Support for multiple stablecoins</div>
           </div>
           <div className="bg-slate-800/50 backdrop-blur-sm rounded-lg p-4 border border-slate-700/50">
             <div className="text-cyan-400 font-semibold mb-2">🌐 Multichain</div>
             <div className="text-sm text-slate-300">Powered by Circle CCTP</div>
           </div>
         </div>
+
+        {/* Contract Addresses Info */}
+        {isArcTestnet && (
+          <div className="mt-6 bg-blue-500/10 border border-blue-500/30 rounded-lg p-4 backdrop-blur-sm">
+            <div className="text-sm text-blue-100">
+              <strong>📋 Official Arc Testnet Contracts:</strong>
+              <ul className="mt-2 ml-4 list-disc space-y-1 text-xs">
+                <li>
+                  <strong>USDC:</strong> <code className="bg-slate-800 px-1 rounded">0x3600000000000000000000000000000000000000</code>
+                  <a href={`${chains.Arc_Testnet.explorer}/address/${ARC_CONTRACTS.USDC}`} target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:text-cyan-300 ml-2">
+                    View ↗
+                  </a>
+                </li>
+                <li>
+                  <strong>EURC:</strong> <code className="bg-slate-800 px-1 rounded">0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a</code>
+                  <a href={`${chains.Arc_Testnet.explorer}/address/${ARC_CONTRACTS.EURC}`} target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:text-cyan-300 ml-2">
+                    View ↗
+                  </a>
+                </li>
+              </ul>
+              <div className="mt-2 text-xs text-slate-400">
+                Source: <a href="https://docs.arc.network/arc/references/contract-addresses" target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:text-cyan-300">Arc Network Documentation</a>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Local Testing Info */}
         {isLocalhost && (

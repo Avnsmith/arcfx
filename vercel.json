@@ -1,12 +1,8 @@
 {
   "buildCommand": "npm run build",
   "devCommand": "npm run dev",
-  "installCommand": "npm install",
+  "installCommand": "npm install --production=false",
   "framework": "nextjs",
-  "regions": ["iad1"],
-  "env": {
-    "NEXT_PUBLIC_LOCAL_CHAIN_ID": "31337",
-    "NEXT_PUBLIC_LOCAL_RPC": "http://127.0.0.1:8545"
-  }
+  "regions": ["iad1"]
 }
 

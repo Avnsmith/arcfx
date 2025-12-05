@@ -20,9 +20,13 @@ const SWAP_BRIDGE_ABI = [
   "function minSwapAmount() view returns (uint256)"
 ];
 
+// Check if we're in development/localhost
+const isDevelopment = typeof window !== 'undefined' && 
+  (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+
 const ArcFX = () => {
-  const [fromChain, setFromChain] = useState('Localhost');
-  const [toChain, setToChain] = useState('Localhost');
+  const [fromChain, setFromChain] = useState('Arc_Testnet');
+  const [toChain, setToChain] = useState('Ethereum_Sepolia');
   const [amount, setAmount] = useState('');
   const [walletAddress, setWalletAddress] = useState('');
   const [isConnected, setIsConnected] = useState(false);
@@ -37,7 +41,7 @@ const ArcFX = () => {
   const [isLocalhost, setIsLocalhost] = useState(false);
 
   // Chain configurations
-  const chains: Record<string, any> = {
+  const allChains: Record<string, any> = {
     Localhost: {
       name: 'Localhost',
       chainId: 31337,
@@ -56,7 +60,19 @@ const ArcFX = () => {
       explorer: 'https://testnet.arcscan.app',
       usdcAddress: '0x3600000000000000000000000000000000000000',
       cctpDomain: 26,
-      color: 'from-blue-500 to-cyan-500'
+      color: 'from-blue-500 to-cyan-500',
+      // Arc Testnet network details for MetaMask
+      networkDetails: {
+        chainId: '0x4CEA42', // 5042002 in hex
+        chainName: 'Arc Testnet',
+        nativeCurrency: {
+          name: 'USDC',
+          symbol: 'USDC',
+          decimals: 6,
+        },
+        rpcUrls: ['https://rpc.testnet.arc.network'],
+        blockExplorerUrls: ['https://testnet.arcscan.app'],
+      }
     },
     Ethereum_Sepolia: {
       name: 'Ethereum Sepolia',
@@ -80,6 +96,13 @@ const ArcFX = () => {
     }
   };
 
+  // Filter chains based on environment (remove localhost in production)
+  const chains = Object.fromEntries(
+    Object.entries(allChains).filter(([key]) => 
+      isDevelopment || key !== 'Localhost'
+    )
+  );
+
   // Check if localhost is configured
   useEffect(() => {
     setIsLocalhost(
@@ -88,7 +111,48 @@ const ArcFX = () => {
     );
   }, [fromChain]);
 
-  // Connect wallet
+  // Add Arc Testnet to MetaMask if not already added
+  const addArcTestnetToMetaMask = async () => {
+    if (typeof window.ethereum === 'undefined') return;
+
+    try {
+      const arcChain = allChains.Arc_Testnet;
+      await window.ethereum.request({
+        method: 'wallet_addEthereumChain',
+        params: [arcChain.networkDetails],
+      });
+    } catch (error: any) {
+      // Chain already added or user rejected
+      if (error.code !== 4902) {
+        console.error('Error adding Arc Testnet:', error);
+      }
+    }
+  };
+
+  // Switch to Arc Testnet network
+  const switchToArcTestnet = async () => {
+    if (typeof window.ethereum === 'undefined') return;
+
+    try {
+      const arcChainId = '0x4CEA42'; // 5042002 in hex
+      await window.ethereum.request({
+        method: 'wallet_switchEthereumChain',
+        params: [{ chainId: arcChainId }],
+      });
+    } catch (switchError: any) {
+      // This error code indicates that the chain has not been added to MetaMask
+      if (switchError.code === 4902) {
+        // Add the chain first, then switch
+        await addArcTestnetToMetaMask();
+        await switchToArcTestnet();
+      } else {
+        console.error('Error switching to Arc Testnet:', switchError);
+        throw switchError;
+      }
+    }
+  };
+
+  // Connect wallet and auto-detect/switch to Arc Testnet
   const connectWallet = async () => {
     if (typeof window.ethereum !== 'undefined') {
       try {
@@ -108,8 +172,20 @@ const ArcFX = () => {
         const web3Signer = await web3Provider.getSigner();
         setSigner(web3Signer);
 
-        // Check and switch network if needed
-        await checkAndSwitchNetwork();
+        // Auto-detect and switch to Arc Testnet
+        if (fromChain === 'Arc_Testnet') {
+          try {
+            await switchToArcTestnet();
+          } catch (error: any) {
+            console.error('Network switch error:', error);
+            // Continue even if switch fails
+          }
+        }
+
+        // Check and switch network if needed (for localhost)
+        if (isLocalhost) {
+          await checkAndSwitchNetwork();
+        }
 
         // Load balance
         await loadBalance();
@@ -121,9 +197,9 @@ const ArcFX = () => {
     }
   };
 
-  // Check and switch to localhost network
+  // Check and switch to localhost network (only for development)
   const checkAndSwitchNetwork = async () => {
-    if (!provider || !isLocalhost) return;
+    if (!provider || !isLocalhost || !isDevelopment) return;
 
     try {
       const network = await provider.getNetwork();
@@ -156,13 +232,12 @@ const ArcFX = () => {
       }
     } catch (error: any) {
       console.error('Network switch error:', error);
-      alert('Please switch to Localhost network (Chain ID: 31337) in MetaMask');
     }
   };
 
   // Load USDC balance
   const loadBalance = async () => {
-    if (!signer || !chains[fromChain]?.usdcAddress || !isLocalhost) {
+    if (!signer || !chains[fromChain]?.usdcAddress) {
       return;
     }
 
@@ -187,10 +262,17 @@ const ArcFX = () => {
 
   // Refresh balance
   useEffect(() => {
-    if (isConnected && isLocalhost) {
+    if (isConnected && signer && chains[fromChain]?.usdcAddress) {
       loadBalance();
     }
-  }, [fromChain, isConnected, isLocalhost, walletAddress]);
+  }, [fromChain, isConnected, walletAddress]);
+
+  // Auto-switch network when chain changes
+  useEffect(() => {
+    if (isConnected && fromChain === 'Arc_Testnet') {
+      switchToArcTestnet().catch(console.error);
+    }
+  }, [fromChain, isConnected]);
 
   // Copy address
   const copyAddress = () => {
@@ -248,8 +330,14 @@ const ArcFX = () => {
       return;
     }
 
-    if (!isLocalhost || !signer || !chains[fromChain]?.usdcAddress || !chains[fromChain]?.swapBridgeAddress) {
+    if (isLocalhost && (!signer || !chains[fromChain]?.usdcAddress || !chains[fromChain]?.swapBridgeAddress)) {
       alert('Localhost contracts not configured. Please set NEXT_PUBLIC_USDC_ADDRESS and NEXT_PUBLIC_SWAP_BRIDGE_ADDRESS in .env.local');
+      return;
+    }
+
+    // For production/testnet, show demo message
+    if (!isLocalhost) {
+      alert('This is a demo interface. Smart contracts need to be deployed to testnet for real transactions.');
       return;
     }
 
@@ -385,8 +473,8 @@ const ArcFX = () => {
                 </>
               ) : (
                 <>
-                  <strong>Gas Fees Paid in USDC!</strong> Arc testnet uses USDC as native gas token. 
-                  All fees are paid in stablecoins for predictable costs (~$0.01 per transaction).
+                  <strong>Arc Testnet Auto-Detection:</strong> When you connect your wallet, Arc Testnet will be automatically added to MetaMask if not already configured. 
+                  Gas fees are paid in USDC for predictable costs (~$0.01 per transaction).
                 </>
               )}
             </div>

@@ -42,6 +42,8 @@ const ArcFX = () => {
   const [balance, setBalance] = useState('0.00');
   const [copied, setCopied] = useState(false);
   const [estimatedFee, setEstimatedFee] = useState('0.01');
+  const [balanceLoading, setBalanceLoading] = useState(false);
+  const [balanceError, setBalanceError] = useState<string | null>(null);
   const [provider, setProvider] = useState<ethers.BrowserProvider | null>(null);
   const [signer, setSigner] = useState<ethers.JsonRpcSigner | null>(null);
   const [tokenDecimals, setTokenDecimals] = useState(6);
@@ -200,6 +202,13 @@ const ArcFX = () => {
         if (fromChain === 'Arc_Testnet') {
           try {
             await switchToArcTestnet();
+            // Wait a bit for network switch to complete
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            // Refresh provider and signer after network switch
+            const newProvider = new ethers.BrowserProvider(window.ethereum!);
+            const newSigner = await newProvider.getSigner();
+            setProvider(newProvider);
+            setSigner(newSigner);
           } catch (error: any) {
             console.error('Network switch error:', error);
             // Continue even if switch fails
@@ -211,7 +220,8 @@ const ArcFX = () => {
           await checkAndSwitchNetwork();
         }
 
-        // Load balance
+        // Wait a moment for everything to settle, then load balance
+        await new Promise(resolve => setTimeout(resolve, 500));
         await loadBalance();
       } catch (error: any) {
         alert('Failed to connect wallet: ' + error.message);
@@ -261,27 +271,88 @@ const ArcFX = () => {
 
   // Load token balance (USDC or EURC)
   const loadBalance = async () => {
+    setBalanceLoading(true);
+    setBalanceError(null);
+
+    if (!signer) {
+      console.error('No signer available');
+      setBalanceError('Wallet not connected');
+      setBalanceLoading(false);
+      return;
+    }
+
     const tokenAddress = getTokenAddress(fromChain, selectedToken);
-    if (!signer || !tokenAddress) {
+    if (!tokenAddress) {
+      console.error(`No token address found for chain: ${fromChain}, token: ${selectedToken}`);
+      setBalanceError(`Token address not found for ${selectedToken}`);
+      setBalance('0.00');
+      setBalanceLoading(false);
       return;
     }
 
     try {
+      // Verify we're on the correct network
+      const network = await provider?.getNetwork();
+      const expectedChainId = chains[fromChain]?.chainId;
+      
+      if (network && expectedChainId && network.chainId !== BigInt(expectedChainId)) {
+        const errorMsg = `Please switch to ${chains[fromChain]?.name} (Chain ID: ${expectedChainId})`;
+        console.warn(`Network mismatch! Expected chain ${expectedChainId}, but connected to ${network.chainId}`);
+        setBalanceError(errorMsg);
+        setBalance('0.00');
+        setBalanceLoading(false);
+        return;
+      }
+
+      console.log(`Loading ${selectedToken} balance from:`, tokenAddress);
+      console.log(`Wallet address:`, walletAddress);
+      console.log(`Network:`, network?.chainId);
+
       const tokenContract = new ethers.Contract(
         tokenAddress,
         ERC20_ABI,
         signer
       );
 
-      const balance = await tokenContract.balanceOf(walletAddress);
-      const decimals = await tokenContract.decimals();
+      // Get balance and decimals
+      const [balance, decimals] = await Promise.all([
+        tokenContract.balanceOf(walletAddress),
+        tokenContract.decimals()
+      ]);
+
       setTokenDecimals(decimals);
       
       const formattedBalance = ethers.formatUnits(balance, decimals);
-      setBalance(parseFloat(formattedBalance).toFixed(2));
+      const balanceNumber = parseFloat(formattedBalance);
+      
+      console.log(`Balance loaded: ${balanceNumber} ${selectedToken}`);
+      
+      setBalance(balanceNumber.toFixed(2));
+      setBalanceError(null);
     } catch (error: any) {
       console.error('Error loading balance:', error);
+      console.error('Error details:', {
+        message: error.message,
+        reason: error.reason,
+        code: error.code,
+        data: error.data
+      });
+      
+      let errorMessage = 'Failed to load balance';
+      
+      // Show user-friendly error message
+      if (error.message?.includes('network') || error.code === 'NETWORK_ERROR') {
+        errorMessage = `Network error: Please make sure you're connected to ${chains[fromChain]?.name}`;
+      } else if (error.reason) {
+        errorMessage = `Contract error: ${error.reason}`;
+      } else if (error.message) {
+        errorMessage = error.message;
+      }
+      
+      setBalanceError(errorMessage);
       setBalance('0.00');
+    } finally {
+      setBalanceLoading(false);
     }
   };
 
@@ -476,13 +547,32 @@ const ArcFX = () => {
                 </button>
               </div>
               <div className="text-sm text-cyan-400 mt-1">
-                Balance: {balance} {selectedToken}
+                {balanceLoading ? (
+                  <span className="flex items-center gap-2">
+                    <RefreshCw className="animate-spin" size={14} />
+                    Loading balance...
+                  </span>
+                ) : (
+                  <>
+                    Balance: {balance} {selectedToken}
+                    {balanceError && (
+                      <div className="text-xs text-red-400 mt-1">
+                        {balanceError}
+                      </div>
+                    )}
+                  </>
+                )}
               </div>
               <button
                 onClick={loadBalance}
-                className="text-xs text-blue-400 hover:text-blue-300 mt-1 flex items-center gap-1"
+                disabled={balanceLoading}
+                className={`text-xs mt-1 flex items-center gap-1 transition-colors ${
+                  balanceLoading
+                    ? 'text-slate-500 cursor-not-allowed'
+                    : 'text-blue-400 hover:text-blue-300'
+                }`}
               >
-                <RefreshCw size={12} />
+                <RefreshCw className={balanceLoading ? 'animate-spin' : ''} size={12} />
                 Refresh
               </button>
             </div>

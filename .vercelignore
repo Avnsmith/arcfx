@@ -1,0 +1,8 @@
+# Ignore Hardhat files from Vercel build
+contracts/
+scripts/
+hardhat.config.ts
+cache/
+artifacts/
+typechain-types/
+
